@@ -29,22 +29,31 @@ namespace Color {
 	static const float Cyan      = 180;
 	static const float Sky       = 200;
 	static const float Blue      = 218;
-	static const float Violet    = 271;
-	static const float Magenta   = 326;
-	static const float Pink      = 345;
+  static const float Violet    = 271;
+  static const float Magenta   = 326;
+  static const float Pink      = 345;
 
-	void transHSVtoRGB(float *dst, const float h, const float s, const float v);
-	void trans(float *dst, float color, float bias);
+  void transHSVtoRGB(float *dst, const float h, const float s, const float v);
+  void trans(float *dst, float color, float bias);
 };
 
 namespace Random {
-	void seed(unsigned int);
-	unsigned int random();
-	unsigned int random(unsigned int);
-	unsigned int random(unsigned int, unsigned int);
-	float randomf();
-	double randomd();
+  void seed(unsigned int);
+  unsigned int random();
+  unsigned int random(unsigned int);
+  unsigned int random(unsigned int, unsigned int);
+  float randomf();
+  double randomd();
 };
 
 };
+
+namespace details {
+  template <typename T>
+  struct SetArgHandler {
+    static ::size_t size(const T&) { return sizeof(T); }
+    static T* ptr(T& value) { return &value; }
+  };
+}; /* end of namespace details */
+
 #endif
