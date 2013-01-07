@@ -8,6 +8,7 @@
 #include <fstream>
 #include <sstream>
 #include <iterator>
+#include <map>
 
 #if defined(_WIN32)||defined(_WIN64) /* Windows */
 #include <GL/glew.h>
@@ -31,26 +32,15 @@ class Sugarscape {
   const int height;
   const int population;
 
-  GLuint agent_vertex_vbo;
-  GLuint agent_color_vbo;
-  GLuint space_vertex_vbo;
-  GLuint space_color_vbo;
+  GLuint agentVertexObj;
+  GLuint agentColorObj;
+  GLuint spaceVertexObj;
+  GLuint spaceColorObj;
 
   const int empty;
 
   float patch;
   float halfPatch;
-
-  //std::vector< Point<int> > pos;
-  std::vector<int> pos;
-  std::vector<int> age;
-  std::vector<int> max_age;
-  std::vector<int> vision;
-  std::vector<int> sugar;
-  std::vector<int> metabolism;
-
-  std::vector<int> space;
-  std::vector<int> space_max_sugar;
 
   // GLUT
   int mouse_button;
@@ -77,14 +67,6 @@ class Sugarscape {
   cl_command_queue queue;
   cl_program program;
 
-  cl_kernel kernelMoveToBestSugarSpot;
-  cl_kernel kernelUpdateAgentParameter;
-  cl_kernel kernelGrowupSpaceSugar;
-  cl_kernel kernelWriteAgentVertexObj;
-  cl_kernel kernelWriteSpaceColorObj;
-
-  std::vector<cl_kernel*> kernels;
-
   cl_mem memSpace;
   cl_mem memSeed;
   cl_mem memPosition;
@@ -93,11 +75,13 @@ class Sugarscape {
   cl_mem memVision;
   cl_mem memSugar;
   cl_mem memMetabolism;
+  cl_mem memDeathFlag;
   cl_mem memSpaceSugar;
   cl_mem memSpaceMaxSugar;
   cl_mem memAgentVertexObj;
   cl_mem memSpaceColorObj;
 
+  std::map<std::string, cl_kernel> kernels;
   std::vector<cl_mem> buffers;
 
 public:
@@ -111,10 +95,10 @@ public:
     width(width_),
     height(height_),
     population(population_),
-    agent_vertex_vbo(0),
-    agent_color_vbo(0),
-    space_vertex_vbo(0),
-    space_color_vbo(0),
+    agentVertexObj(0),
+    agentColorObj(0),
+    spaceVertexObj(0),
+    spaceColorObj(0),
     empty(-1),
     mouse_button(0),
     translate_x(0),
@@ -130,49 +114,42 @@ public:
     deviceIdx(0),
     context(0),
     queue(0),
-    program(0),
-    kernelMoveToBestSugarSpot(0),
-    kernelUpdateAgentParameter(0),
-    kernelWriteAgentVertexObj(0),
-    kernelGrowupSpaceSugar(0),
-    kernelWriteSpaceColorObj(0),
-    memSpace(0),
-    memSeed(0),
-    memPosition(0),
-    memAge(0),
-    memMaxAge(0),
-    memVision(0),
-    memSugar(0),
-    memMetabolism(0),
-    memSpaceSugar(0),
-    memSpaceMaxSugar(0),
-    memAgentVertexObj(0),
-    memSpaceColorObj(0)
+    program(0)
   {
+    patch = (float)window_width / width;
+    halfPatch = patch / 2;
+  }
+
+  ~Sugarscape() {
+    cleanup();
+  }
+
+  int init() {
     if (!initGlut()) {
       std::cerr << "Error: Initializing GLUT\n";
-      return;
+      return 0;
     }
 
     if (!initOpenCL()) {
       std::cerr << "Error: Initializing OpenCL\n";
-      return;
+      return 0;
     }
 
-    patch = (float)window_width / width;
-    halfPatch = patch / 2;
+    std::vector<int> space(width * height, empty);
+    std::vector<int> space_max_sugar(width * height, 0);
 
-    /* Initializing Parameters */
-    space = std::vector<int>(width * height, empty);
-    space_max_sugar = std::vector<int>(width * height, 0);
+    if (!readMapFile(&space_max_sugar[0])) {
+      std::cerr << "Error: Reading TXT File\n";
+      return 0;
+    }
 
-    pos = std::vector<int>(population * 2, 0);
-    age        = std::vector<int>(population, 0);
-    max_age    = std::vector<int>(population, 0);
-    vision     = std::vector<int>(population, 0);
-    sugar      = std::vector<int>(population, 0);
-    metabolism = std::vector<int>(population, 0);
-
+    std::vector<int> pos(population * 2, 0);
+    std::vector<int> age(population, 0);
+    std::vector<int> max_age(population, 0);
+    std::vector<int> vision(population, 0);
+    std::vector<int> sugar(population, 0);
+    std::vector<int> metabolism(population, 0);
+    
     int agent_id = 0;
     while (agent_id < population) {
       int x = mcl::Random::random(width);
@@ -192,85 +169,207 @@ public:
       sugar[i] = mcl::Random::random(5, 26);
     }
 
-    if (!readMapFile()) {
-
-      std::cerr << "Error: Reading TXT File\n";
-      return;
+    std::vector<unsigned int> seed(population * 4, 0);
+    for (int i = 0; i < population * 4; i++) {
+      seed[i] = mcl::Random::random();
     }
 
-    createVertexBuffers();
-    createColorBuffers();
+    createAgentBufferObjs(&pos.front());
+    createSpaceBufferObjs(&space_max_sugar.front());
 
-    if (!createCLBuffers()) {
-      std::cerr << "Error: Creating OpenCL Buffers\n";
-      return;
-    }
-  }
+    std::vector<int> deathFlag(population, 0);
 
-  ~Sugarscape() {
-    if (agent_vertex_vbo != 0) {
-      glBindBuffer(1, agent_vertex_vbo);
-      glDeleteBuffers(1, &agent_vertex_vbo);
-    }
-    if (agent_color_vbo != 0) {
-      glBindBuffer(1, agent_color_vbo);
-      glDeleteBuffers(1, &agent_color_vbo);
-    }
-    if (space_vertex_vbo != 0) {
-      glBindBuffer(1, space_vertex_vbo);
-      glDeleteBuffers(1, &space_vertex_vbo);
-    }
-    if (space_color_vbo != 0) {
-      glBindBuffer(1, space_color_vbo);
-      glDeleteBuffers(1, &space_color_vbo);
-    }
-    if (!buffers.empty()) {
-      for (size_t i = 0; i < buffers.size(); i++) {
-        if (buffers[i] != 0) clReleaseMemObject(buffers[i]);
-      }
-    }
-    if (!kernels.empty()) {
-      for (size_t i = 0; i < kernels.size(); i++) {
-        if (*kernels[i] != 0) clReleaseKernel(*kernels[i]);
-        else std::cerr << "debug\n";
-      }
-    }
-    if (program != 0) clReleaseProgram(program);
-    if (queue != 0) clReleaseCommandQueue(queue);
-    if (context != 0) clReleaseContext(context);
-  }
+    memSpace = createCLBuffer(&space.front(), space.size());
+    memSeed = createCLBuffer(&seed.front(), seed.size());
+    memPosition = createCLBuffer(&pos.front(), pos.size());
+    memAge = createCLBuffer(&age.front(), age.size());
+    memMaxAge = createCLBuffer(&max_age.front(), max_age.size());
+    memVision = createCLBuffer(&vision.front(), vision.size());
+    memSugar = createCLBuffer(&sugar.front(), sugar.size());
+    memMetabolism = createCLBuffer(&metabolism.front(), metabolism.size());
+    memDeathFlag = createCLBuffer(&deathFlag.front(), deathFlag.size());
+    memSpaceSugar = createCLBuffer(&space_max_sugar.front(), space_max_sugar.size());
+    memSpaceMaxSugar = createCLBuffer(&space_max_sugar.front(), space_max_sugar.size());
 
-  void start() {
-#if defined(_WIN32)||(_WIN64)
-    if (glewGetExtension("WGL_EXT_swap_control")) {
-      wglSwapIntervalEXT(vsync);
+    memAgentVertexObj = createFromGLBuffer(agentVertexObj);
+    memSpaceColorObj = createFromGLBuffer(spaceColorObj);
+
+    for (size_t i = 0; i < buffers.size(); i++) {
+      if (buffers[i] == 0) return 0;
     }
-#endif
-    Sugarscape** ss_ptr = get_ptr();
-    *ss_ptr = this;
-    glutDisplayFunc(_wrapDisplay);
-    glutKeyboardFunc(_wrapKeyboard);
-    glutIdleFunc(_wrapIdle);
-    glutMouseFunc(_wrapMouse);
-    glutMotionFunc(_wrapMotion);
 
-    start_clock = std::clock();
-    glutMainLoop();
-  }
+    int err = 1;
+    err &= createKernel("writeAgentVertexObj");
+    err &= createKernel("writeSpaceColorObj");
+    err &= createKernel("moveToBestSugarSpot");
+    err &= createKernel("updateAgentParameter");
+    err &= createKernel("growupSpaceSugar");
+    err &= createKernel("generateNewAgent");
+    if (!err) return 0;
 
-  void setVsync(bool arg) {
-    if (arg) vsync = 1;
-    else vsync = 0;
-  }
+    if (!setArgs()) return 0;
 
-  void setStop(bool arg) {
-    if (arg) pause = true;
-    else pause = false;
+    return 1;
   }
 
 private:
   int run() {
-    //TODO
+    int err;
+    err = moveToBestSugarSpot();
+    if (err == 0) return 0;
+    
+    err = updateAgentParameter();
+    if (err == 0) return 0;
+
+    err = growupSpaceSugar();
+    if (err == 0) return 0;
+
+    err = generateNewAgent();
+    if (err == 0) return 0;
+
+    err = writeAgentVertexObj();
+    if (err == 0) return 0;
+    
+    err = writeSpaceColorObj(mcl::Color::Yellow, 4, 0, -0.85f);
+    if (err == 0) return 0;
+
+    return 1;
+  }
+
+  int writeAgentVertexObj() {
+    int err;
+    err = acquireGLObject(memAgentVertexObj);
+    if (err == 0) return 0;
+
+    size_t gwSize = population;
+    std::string krnl = "writeAgentVertexObj";
+    err = launchKernel(krnl, &gwSize, 1);
+    if (err == 0) return 0;
+
+    err = releaseGLObject(memAgentVertexObj);
+    if (err == 0) return 0;
+
+    return 1;
+  }
+
+  int writeSpaceColorObj(float color_value, float min_value, float max_value, float bias) {
+    std::string krnl = "writeSpaceColorObj";
+    
+    cl_uint flagInverse = (max_value < min_value);
+    if (flagInverse) {
+      float tmp = max_value;
+      max_value = min_value;
+      min_value = tmp;
+    }
+
+    if (bias != 0) {
+      float max_min = fabs(max_value - min_value);
+      if (bias < 0) {
+        max_value += max_min * fabs(bias);
+      } else {
+        min_value -= max_min * bias;
+      }
+    }
+
+    setArg(krnl, 3, min_value);
+    setArg(krnl, 4, max_value);
+    setArg(krnl, 5, flagInverse);
+
+    int err;
+    err = acquireGLObject(memSpaceColorObj);
+    if (err == 0) return 0;
+
+    size_t gwSize[2] = {width, height};
+    err = launchKernel(krnl, gwSize, 2);
+    if (err == 0) return 0;
+
+    err = releaseGLObject(memSpaceColorObj);
+    if (err == 0) return 0;
+
+    return 1;
+  }
+
+  int moveToBestSugarSpot() {
+    std::string krnl = "moveToBestSugarSpot";
+    size_t gwSize = population;
+    return launchKernel(krnl, &gwSize, 1);
+  }
+
+  int updateAgentParameter() {
+    std::string krnl = "updateAgentParameter";
+    size_t gwSize = population;
+    return launchKernel(krnl, &gwSize, 1);
+  }
+
+  int growupSpaceSugar() {
+    std::string krnl = "growupSpaceSugar";
+    size_t gwSize[2] = {width, height};
+    return launchKernel(krnl, gwSize, 2);
+  }
+
+  int generateNewAgent() {
+    std::string krnl = "generateNewAgent";
+    size_t gwSize = population;
+    return launchKernel(krnl, &gwSize, 1);
+  }
+
+  int setArgs() {
+    std::string krnl;
+    int err, i;
+
+    krnl = "writeAgentVertexObj";
+    err = i = 0;
+    err += setArg(krnl, i++, memAgentVertexObj);
+    err += setArg(krnl, i++, memPosition);
+    err += setArg(krnl, i++, patch);
+    if (err != i) return 0;
+
+    krnl = "writeSpaceColorObj";
+    err = i = 0;
+    err += setArg(krnl, i++, memSpaceColorObj);
+    err += setArg(krnl, i++, memSpaceSugar);
+    err += setArg(krnl, i++, mcl::Color::Yellow);
+    if (err != i) return 0;
+
+    krnl = "moveToBestSugarSpot";
+    err = i = 0;
+    err += setArg(krnl, i++, memPosition);
+    err += setArg(krnl, i++, memVision);
+    err += setArg(krnl, i++, memSpaceSugar);
+    err += setArg(krnl, i++, memSpace);
+    err += setArg(krnl, i++, memSeed);
+    if (err != i) return 0;
+
+    krnl = "updateAgentParameter";
+    err = i = 0;
+    err += setArg(krnl, i++, memPosition);
+    err += setArg(krnl, i++, memAge);
+    err += setArg(krnl, i++, memMaxAge);
+    err += setArg(krnl, i++, memMetabolism);
+    err += setArg(krnl, i++, memSugar);
+    err += setArg(krnl, i++, memDeathFlag);
+    err += setArg(krnl, i++, memSpaceSugar);
+    if (err != i) return 0;
+
+    krnl = "growupSpaceSugar";
+    err = i = 0;
+    err += setArg(krnl, i++, memSpaceSugar);
+    err += setArg(krnl, i++, memSpaceMaxSugar);
+    if (err != i) return 0;
+
+    krnl = "generateNewAgent";
+    err = i = 0;
+    err += setArg(krnl, i++, memPosition);
+    err += setArg(krnl, i++, memAge);
+    err += setArg(krnl, i++, memMaxAge);
+    err += setArg(krnl, i++, memVision);
+    err += setArg(krnl, i++, memMetabolism);
+    err += setArg(krnl, i++, memSugar);
+    err += setArg(krnl, i++, memDeathFlag);
+    err += setArg(krnl, i++, memSpace);
+    err += setArg(krnl, i++, memSeed);
+    if (err != i) return 0;
+
     return 1;
   }
 
@@ -306,13 +405,21 @@ private:
     cl_uint numPlatforms = 0;
     std::vector<cl_platform_id> platforms(10);
     ret = clGetPlatformIDs(10, &platforms[0], &numPlatforms);
-    if (ret != CL_SUCCESS || numPlatforms == 0) return 0;
+    if (ret != CL_SUCCESS || numPlatforms == 0) {
+      std::cerr << "Error " << ret << ": clGetPlatformIDs\n";
+      return 0;
+    }
+    if (platformIdx > numPlatforms) platformIdx = 0;
     platform = platforms[platformIdx];
 
     cl_uint numDevices = 0;
     std::vector<cl_device_id> devices(10);
     ret = clGetDeviceIDs(platform,CL_DEVICE_TYPE_ALL, 10, &devices[0], &numDevices);
-    if (ret != CL_SUCCESS || numDevices == 0) return 0;
+    if (ret != CL_SUCCESS || numDevices == 0) {
+      std::cerr << "Error " << ret << ": clGetDeviceIDs\n";
+      return 0;
+    }
+    if (deviceIdx > numDevices) deviceIdx = 0;
     device = devices[deviceIdx];
 
 #if defined(_WIN32)||defined(_WIN64)
@@ -331,13 +438,21 @@ private:
     };
 #endif
     context = clCreateContext(properties, 1, &device, NULL, NULL, &ret);
-    if (ret != CL_SUCCESS) return 0;
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clCreateContext\n";
+      return 0;
+    }
     queue = clCreateCommandQueue(context, device, 0, &ret);
-    if (ret != CL_SUCCESS) return 0;
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clCreateCommandQueue\n";
+      return 0;
+    }
 
     std::ifstream kernelFile("kernel.cl", std::ios::in);
-    if (!kernelFile.is_open()) return 0;
-
+    if (!kernelFile.is_open()) {
+      std::cerr << "Error: Cannot open kernel.cl\n";
+      return 0;
+    }
     std::ostringstream oss;
     oss << kernelFile.rdbuf();
     std::string srcStdStr = oss.str();
@@ -350,149 +465,129 @@ private:
     std::string newSrcStdStr = ss.str() + srcStdStr;
     const char *srcStr = newSrcStdStr.c_str();
     program = clCreateProgramWithSource(context, 1, (const char**)&srcStr, NULL, &ret);
-    if (ret != CL_SUCCESS) return 0;
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clCreateProgramWithSource\n";
+      return 0;
+    }
 
     ret = clBuildProgram(program, 1, &device, NULL, NULL, NULL);
-    if (ret != CL_SUCCESS) return 0;
-
-    kernelMoveToBestSugarSpot = clCreateKernel(program, "moveToBestSugarSpot", &ret);
-    if (ret != CL_SUCCESS) return 0;
-    kernels.push_back(&kernelMoveToBestSugarSpot);
-
-    kernelUpdateAgentParameter = clCreateKernel(program, "updateAgentParameter", &ret);
-    if (ret != CL_SUCCESS) return 0;
-    kernels.push_back(&kernelUpdateAgentParameter);
-
-    kernelGrowupSpaceSugar = clCreateKernel(program, "growupSpaceSugar", &ret);
-    if (ret != CL_SUCCESS) return 0;
-    kernels.push_back(&kernelGrowupSpaceSugar);
-
-    kernelWriteAgentVertexObj = clCreateKernel(program, "writeAgentVertexObj", &ret);
-    if (ret != CL_SUCCESS) return 0;
-    kernels.push_back(&kernelWriteAgentVertexObj);
-
-    kernelWriteSpaceColorObj = clCreateKernel(program, "writeSpaceColorObj", &ret);
-    if (ret != CL_SUCCESS) return 0;
-    kernels.push_back(&kernelWriteSpaceColorObj);
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clBuildProgram\n";
+      return 0;
+    }
 
     return 1;
   }
 
-  void createVertexBuffers() {
+  void createAgentBufferObjs(int *agentPositions) {
     cl_float2 fp[4];
     fp[0].s[0] = halfPatch;      fp[0].s[1] = 0;
     fp[1].s[0] = 0;              fp[1].s[1] = -1 * halfPatch;
     fp[2].s[0] = -1 * halfPatch; fp[2].s[1] = 0;
     fp[3].s[0] = 0;              fp[3].s[1] = halfPatch;
 
-    size_t agent_vbo_size = sizeof(float) * 4 * 3 * population;
-    std::vector<float> agent_vertex(population * 4 * 3, 0);
-    for (int agent_id = 0; agent_id < population; agent_id++) {
-      float x = pos[2 * agent_id + 0] * patch + halfPatch;
-      float y = pos[2 * agent_id + 1] * patch + halfPatch;
-      agent_vertex[12 * agent_id + 0 ] = x + fp[0].s[0];
-      agent_vertex[12 * agent_id + 1 ] = y + fp[0].s[1];
-      agent_vertex[12 * agent_id + 2 ] = 0;
-      agent_vertex[12 * agent_id + 3 ] = x + fp[1].s[0];
-      agent_vertex[12 * agent_id + 4 ] = y + fp[1].s[1];
-      agent_vertex[12 * agent_id + 5 ] = 0;
-      agent_vertex[12 * agent_id + 6 ] = x + fp[2].s[0];
-      agent_vertex[12 * agent_id + 7 ] = y + fp[2].s[1];
-      agent_vertex[12 * agent_id + 8 ] = 0;
-      agent_vertex[12 * agent_id + 9 ] = x + fp[3].s[0];
-      agent_vertex[12 * agent_id + 10] = y + fp[3].s[1];
-      agent_vertex[12 * agent_id + 11] = 0;
+    size_t size = sizeof(float) * 4 * 3 * population;
+    std::vector<float> bufferObj(population * 4 * 3, 0);
+    for (int i = 0; i < population; i++) {
+      float x = agentPositions[2 * i + 0] * patch + halfPatch;
+      float y = agentPositions[2 * i + 1] * patch + halfPatch;
+      bufferObj[12 * i + 0 ] = x + fp[0].s[0];
+      bufferObj[12 * i + 1 ] = y + fp[0].s[1];
+      bufferObj[12 * i + 2 ] = 0;
+      bufferObj[12 * i + 3 ] = x + fp[1].s[0];
+      bufferObj[12 * i + 4 ] = y + fp[1].s[1];
+      bufferObj[12 * i + 5 ] = 0;
+      bufferObj[12 * i + 6 ] = x + fp[2].s[0];
+      bufferObj[12 * i + 7 ] = y + fp[2].s[1];
+      bufferObj[12 * i + 8 ] = 0;
+      bufferObj[12 * i + 9 ] = x + fp[3].s[0];
+      bufferObj[12 * i + 10] = y + fp[3].s[1];
+      bufferObj[12 * i + 11] = 0;
     }
 
-    glGenBuffers(1, &agent_vertex_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, agent_vertex_vbo);
-    glBufferData(GL_ARRAY_BUFFER, agent_vbo_size, &agent_vertex[0], GL_STATIC_DRAW);
+    glGenBuffers(1, &agentVertexObj);
+    glBindBuffer(GL_ARRAY_BUFFER, agentVertexObj);
+    glBufferData(GL_ARRAY_BUFFER, size, &bufferObj[0], GL_STATIC_DRAW);
     glFinish();
 
-    fp[0].s[0] = halfPatch;      fp[0].s[1] = -1 * halfPatch;
-    fp[1].s[0] = -1 * halfPatch; fp[1].s[1] = -1 * halfPatch;
-    fp[2].s[0] = -1 * halfPatch; fp[2].s[1] = halfPatch;
-    fp[3].s[0] = halfPatch;      fp[3].s[1] = halfPatch;
+    float rgb[3];
+    mcl::Color::trans(rgb, mcl::Color::Red, 0);
 
-    size_t space_vbo_size = sizeof(float) * 4 * 3 * width * height;
-    std::vector<float> space_vertex(width * height * 4 * 3, 0);
+    for (int i = 0; i < population; i++) {
+      bufferObj[12 * i + 0 ] = rgb[0]; // r
+      bufferObj[12 * i + 1 ] = rgb[1]; // g
+      bufferObj[12 * i + 2 ] = rgb[2]; // b
+      bufferObj[12 * i + 3 ] = rgb[0];
+      bufferObj[12 * i + 4 ] = rgb[1];
+      bufferObj[12 * i + 5 ] = rgb[2];
+      bufferObj[12 * i + 6 ] = rgb[0];
+      bufferObj[12 * i + 7 ] = rgb[1];
+      bufferObj[12 * i + 8 ] = rgb[2];
+      bufferObj[12 * i + 9 ] = rgb[0];
+      bufferObj[12 * i + 10] = rgb[1];
+      bufferObj[12 * i + 11] = rgb[2];
+    }
+
+    glGenBuffers(1, &agentColorObj);
+    glBindBuffer(GL_ARRAY_BUFFER, agentColorObj);
+    glBufferData(GL_ARRAY_BUFFER, size, &bufferObj[0], GL_STATIC_DRAW);
+    glFinish();
+  }
+
+  void createSpaceBufferObjs(int *spaceSugar) {
+    size_t size = sizeof(float) * 4 * 3 * width * height;
+    std::vector<float> bufferObj(width * height * 4 * 3, 0);
     for (int i = 0; i < width * height; i++) {
       int x = i % width;
       int y = i / width;
-      space_vertex[12 * i + 0 ] = x * patch;
-      space_vertex[12 * i + 1 ] = y * patch;
-      space_vertex[12 * i + 2 ] = 0;
-      space_vertex[12 * i + 3 ] = x * patch + patch;
-      space_vertex[12 * i + 4 ] = y * patch;
-      space_vertex[12 * i + 5 ] = 0;
-      space_vertex[12 * i + 6 ] = x * patch + patch;
-      space_vertex[12 * i + 7 ] = y * patch + patch;
-      space_vertex[12 * i + 8 ] = 0;
-      space_vertex[12 * i + 9 ] = x * patch;
-      space_vertex[12 * i + 10] = y * patch + patch;
-      space_vertex[12 * i + 11] = 0;
+      bufferObj[12 * i + 0 ] = x * patch;
+      bufferObj[12 * i + 1 ] = y * patch;
+      bufferObj[12 * i + 2 ] = 0;
+      bufferObj[12 * i + 3 ] = x * patch + patch;
+      bufferObj[12 * i + 4 ] = y * patch;
+      bufferObj[12 * i + 5 ] = 0;
+      bufferObj[12 * i + 6 ] = x * patch + patch;
+      bufferObj[12 * i + 7 ] = y * patch + patch;
+      bufferObj[12 * i + 8 ] = 0;
+      bufferObj[12 * i + 9 ] = x * patch;
+      bufferObj[12 * i + 10] = y * patch + patch;
+      bufferObj[12 * i + 11] = 0;
     }
 
-    glGenBuffers(1, &space_vertex_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, space_vertex_vbo);
-    glBufferData(GL_ARRAY_BUFFER, space_vbo_size, &space_vertex[0], GL_STATIC_DRAW);
-    glFinish();
-  }
-
-  void createColorBuffers() {
-    float rgb[3];
-    size_t agent_vbo_size = sizeof(float) * 4 * 3 * population;
-    std::vector<float> agent_color(population * 4 * 3, 0);
-    mcl::Color::trans(rgb, mcl::Color::Red, 0);
-    for (int agent_id = 0; agent_id < population; agent_id++) {
-      agent_color[12 * agent_id + 0 ] = rgb[0]; // r
-      agent_color[12 * agent_id + 1 ] = rgb[1]; // g
-      agent_color[12 * agent_id + 2 ] = rgb[2]; // b
-      agent_color[12 * agent_id + 3 ] = rgb[0];
-      agent_color[12 * agent_id + 4 ] = rgb[1];
-      agent_color[12 * agent_id + 5 ] = rgb[2];
-      agent_color[12 * agent_id + 6 ] = rgb[0];
-      agent_color[12 * agent_id + 7 ] = rgb[1];
-      agent_color[12 * agent_id + 8 ] = rgb[2];
-      agent_color[12 * agent_id + 9 ] = rgb[0];
-      agent_color[12 * agent_id + 10] = rgb[1];
-      agent_color[12 * agent_id + 11] = rgb[2];
-    }
-
-    glGenBuffers(1, &agent_color_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, agent_color_vbo);
-    glBufferData(GL_ARRAY_BUFFER, agent_vbo_size, &agent_color[0], GL_STATIC_DRAW);
+    glGenBuffers(1, &spaceVertexObj);
+    glBindBuffer(GL_ARRAY_BUFFER, spaceVertexObj);
+    glBufferData(GL_ARRAY_BUFFER, size, &bufferObj[0], GL_STATIC_DRAW);
     glFinish();
 
-    size_t space_vbo_size = sizeof(float) * 4 * 3 * width * height;
-    std::vector<float> space_color(width * height * 4 * 3, 0);
-    mcl::Color::trans(rgb, mcl::Color::Yellow, 0);
     for (int i = 0; i < width * height; i++) {
-      space_color[12 * i + 0 ] = rgb[0]; // r
-      space_color[12 * i + 1 ] = rgb[1]; // g
-      space_color[12 * i + 2 ] = rgb[2]; // b
-      space_color[12 * i + 3 ] = rgb[0];
-      space_color[12 * i + 4 ] = rgb[1];
-      space_color[12 * i + 5 ] = rgb[2];
-      space_color[12 * i + 6 ] = rgb[0];
-      space_color[12 * i + 7 ] = rgb[1];
-      space_color[12 * i + 8 ] = rgb[2];
-      space_color[12 * i + 9 ] = rgb[0];
-      space_color[12 * i + 10] = rgb[1];
-      space_color[12 * i + 11] = rgb[2];
+      float rgb[3];
+      float bias = 1;
+      if (spaceSugar[i] == 1) bias = 0.8f;
+      else if (spaceSugar[i] == 2) bias = 0.5f;
+      else if (spaceSugar[i] == 3) bias = 0.25f;
+      else if (spaceSugar[i] == 4) bias = -0.05f;
+      mcl::Color::trans(rgb, mcl::Color::Yellow, bias);
+      bufferObj[12 * i + 0 ] = rgb[0]; // r
+      bufferObj[12 * i + 1 ] = rgb[1]; // g
+      bufferObj[12 * i + 2 ] = rgb[2]; // b
+      bufferObj[12 * i + 3 ] = rgb[0];
+      bufferObj[12 * i + 4 ] = rgb[1];
+      bufferObj[12 * i + 5 ] = rgb[2];
+      bufferObj[12 * i + 6 ] = rgb[0];
+      bufferObj[12 * i + 7 ] = rgb[1];
+      bufferObj[12 * i + 8 ] = rgb[2];
+      bufferObj[12 * i + 9 ] = rgb[0];
+      bufferObj[12 * i + 10] = rgb[1];
+      bufferObj[12 * i + 11] = rgb[2];
     }
 
-    glGenBuffers(1, &space_color_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, space_color_vbo);
-    glBufferData(GL_ARRAY_BUFFER, space_vbo_size, &space_color[0], GL_STATIC_DRAW);
+    glGenBuffers(1, &spaceColorObj);
+    glBindBuffer(GL_ARRAY_BUFFER, spaceColorObj);
+    glBufferData(GL_ARRAY_BUFFER, size, &bufferObj[0], GL_STATIC_DRAW);
     glFinish();
   }
 
-  int createCLBuffers() {
-    return 1;
-  }
-
-  int readMapFile() {
+  int readMapFile(int *sugarPtr) {
     std::ifstream ifs;
 
     std::string filename = "sugar-map.txt";
@@ -526,7 +621,7 @@ private:
     /* Set SpaceData<T> */
     for (int y = 0; y < height; y++) {
       for (int x = 0; x < width; x++) {
-        space_max_sugar[ getOneDimIdx(x, y) ] = sugar[ getOneDimIdx(x, y) ];
+        sugarPtr[ getOneDimIdx(x, y) ] = sugar[ getOneDimIdx(x, y) ];
       }
     }
 
@@ -534,29 +629,35 @@ private:
   }
 
   template <class T>
-  int setArg(cl_kernel *krnl, cl_uint num, T value) {
+  int setArg(std::string kernelName, cl_uint num, T value) {
     cl_int ret = clSetKernelArg(
-      *krnl,
+      kernels[kernelName],
       num,
       details::SetArgHandler<T>::size(value),//sizeof(T),
       details::SetArgHandler<T>::ptr(value));
 
-    if (ret != CL_SUCCESS) return 0;
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clSetKernelArg\n";
+      return 0;
+    }
 
     return 1;
   }
 
   int waitForEvent(cl_event *event_) {
     cl_int ret = clWaitForEvents(1, event_);
-    if (ret != CL_SUCCESS) return 0;
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clWaitForEvents\n";
+      return 0;
+    }
     clReleaseEvent(*event_);
     return 1;
   }
 
-  int launchKernel(cl_kernel *krnl, size_t *gwSize, cl_uint dim) {
+  int launchKernel(std::string kernelName, size_t *gwSize, cl_uint dim) {
     cl_event event_;
     cl_int ret = clEnqueueNDRangeKernel(queue,
-      *krnl,
+      kernels[kernelName],
       dim,
       NULL,
       gwSize,
@@ -564,7 +665,10 @@ private:
       0,
       NULL,
       &event_);
-    if (ret != CL_SUCCESS) return 0;
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clEnqueueNDRangeKernel\n";
+      return 0;
+    }
 
     return waitForEvent(&event_);
   }
@@ -576,7 +680,10 @@ private:
       0,
       NULL,
       &event_);
-    if (ret != CL_SUCCESS) return 0;
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clEnqueueAcquireGLObjects\n";
+      return 0;
+    }
 
     return waitForEvent(&event_);
   }
@@ -589,44 +696,101 @@ private:
       0,
       NULL,
       &event_);
-    if (ret != CL_SUCCESS) return 0;
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clEnqueueReleaseGLObjects\n";
+      return 0;
+    }
 
     return waitForEvent(&event_);
+  }
+
+  template <class T>
+  cl_mem createCLBuffer(T *hostPtr, size_t num_element) {
+    cl_int ret;
+    cl_mem memObj = clCreateBuffer(context,
+      CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+      sizeof(T) * num_element,
+      hostPtr,
+      &ret);
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clCreateBuffer\n";
+      return 0;
+    }
+    buffers.push_back(memObj);
+    return memObj;
+  }
+
+  cl_mem createFromGLBuffer(GLuint glBufferObj) {
+    cl_int ret;
+    cl_mem memObj = clCreateFromGLBuffer(context,
+      CL_MEM_WRITE_ONLY,
+      glBufferObj,
+      &ret);
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clCreateFromGLBuffer\n";
+      return 0;
+    }
+    buffers.push_back(memObj);
+    return memObj;
+  }
+
+  int createKernel(std::string krnlName) {
+    cl_int ret;
+    kernels.insert( std::map<std::string, cl_kernel>::value_type( krnlName, (cl_kernel)0) );
+    kernels[krnlName] = clCreateKernel(program, krnlName.c_str(), &ret);
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clCreateKernel\n";
+      return 0;
+    }
+    return 1;
   }
 
   int getOneDimIdx(int x, int y) {
     return x + width * y;
   }
 
-  void calcFPS() {
-    double ifps;
-    fpsCount++;
-    if (fpsCount >= fpsLimit) {
-      end_clock = clock();
-
-      char tmp[256];
-      float milliseconds = ((float)end_clock - (float)start_clock) / CLOCKS_PER_SEC * 1000;
-      milliseconds /= (float)fpsCount;
-
-      ifps = 1.f / (milliseconds / 1000.f);
-      std::sprintf(tmp, "MASCL(%d * %d, %d agents) : %0.1f FPS | %d ticks | Scale %.3f",
-        window_width, window_height, population, ifps, ticks, scale_size);
-
-      glutSetWindowTitle(tmp);
-      fpsCount = 0;
-      fpsLimit = (ifps > 1.f) ? (int)ifps : 1;
-
-      start_clock = clock();
-    }
-  }
-
   /* GLUT Callback */
 public:
+  void setPlatformIndex(cl_uint idx) {
+    platformIdx = idx;
+  }
+
+  void setDeviceIndex(cl_uint idx) {
+    deviceIdx = idx;
+  }
+
+  void setVsync(bool arg) {
+    vsync = arg ? 1 : 0;
+  }
+
+  void setStop(bool arg) {
+    pause = arg ? true : false;
+  }
+
   static void _wrapDisplay() { Sugarscape* ptr = *(get_ptr()); ptr->display(); }
   static void _wrapIdle() { Sugarscape* ptr = *(get_ptr()); ptr->idle(); }
   static void _wrapKeyboard(unsigned char key, int x, int y) { Sugarscape* ptr = *(get_ptr()); ptr->keyboard(key, x, y); }
   static void _wrapMouse(int button, int state, int x, int y) { Sugarscape* ptr = *(get_ptr()); ptr->mouse(button, state, x, y); }
   static void _wrapMotion(int x, int y) { Sugarscape* ptr = *(get_ptr()); ptr->motion(x, y); }
+
+  void start() {
+#if defined(_WIN32)||(_WIN64)
+    if (glewGetExtension("WGL_EXT_swap_control")) {
+      wglSwapIntervalEXT(vsync);
+    }
+#endif
+    Sugarscape** ss_ptr = get_ptr();
+    *ss_ptr = this;
+    glutDisplayFunc(_wrapDisplay);
+    glutKeyboardFunc(_wrapKeyboard);
+    glutIdleFunc(_wrapIdle);
+    glutMouseFunc(_wrapMouse);
+    glutMotionFunc(_wrapMotion);
+
+    start_clock = std::clock();
+    glutMainLoop();
+  }
+
 private:
   static Sugarscape** get_ptr() {
     static Sugarscape* ptr;
@@ -644,18 +808,18 @@ private:
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
 
-    glBindBuffer(GL_ARRAY_BUFFER, space_vertex_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, spaceVertexObj);
     glVertexPointer(3, GL_FLOAT, 0, 0);
 
-    glBindBuffer(GL_ARRAY_BUFFER, space_color_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, spaceColorObj);
     glColorPointer(3, GL_FLOAT, 0, 0);
 
     glDrawArrays(GL_QUADS, 0, width * height * 4);
 
-    glBindBuffer(GL_ARRAY_BUFFER, agent_vertex_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, agentVertexObj);
     glVertexPointer(3, GL_FLOAT, 0, 0);
 
-    glBindBuffer(GL_ARRAY_BUFFER, agent_color_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, agentColorObj);
     glColorPointer(3, GL_FLOAT, 0, 0);
 
     glDrawArrays(GL_QUADS, 0, population * 4);
@@ -774,15 +938,74 @@ private:
     mouse_old_x = x;
     mouse_old_y = y;
   }
+
+  void calcFPS() {
+    double ifps;
+    fpsCount++;
+    if (fpsCount >= fpsLimit) {
+      end_clock = clock();
+
+      char tmp[256];
+      float milliseconds = ((float)end_clock - (float)start_clock) / CLOCKS_PER_SEC * 1000;
+      milliseconds /= (float)fpsCount;
+
+      ifps = 1.f / (milliseconds / 1000.f);
+      std::sprintf(tmp, "MASCL(%d * %d, %d agents) : %0.1f FPS | %d ticks | Scale %.3f",
+        window_width, window_height, population, ifps, ticks, scale_size);
+
+      glutSetWindowTitle(tmp);
+      fpsCount = 0;
+      fpsLimit = (ifps > 1.f) ? (int)ifps : 1;
+
+      start_clock = clock();
+    }
+  }
+
+  void cleanup() {
+    if (agentVertexObj != 0) {
+      glBindBuffer(1, agentVertexObj);
+      glDeleteBuffers(1, &agentVertexObj);
+    }
+    if (agentColorObj != 0) {
+      glBindBuffer(1, agentColorObj);
+      glDeleteBuffers(1, &agentColorObj);
+    }
+    if (spaceVertexObj != 0) {
+      glBindBuffer(1, spaceVertexObj);
+      glDeleteBuffers(1, &spaceVertexObj);
+    }
+    if (spaceColorObj != 0) {
+      glBindBuffer(1, spaceColorObj);
+      glDeleteBuffers(1, &spaceColorObj);
+    }
+    if (!buffers.empty()) {
+      for (size_t i = 0; i < buffers.size(); i++) {
+        if (buffers[i] != 0) clReleaseMemObject(buffers[i]);
+      }
+    }
+    if (!kernels.empty()) {
+      std::map<std::string, cl_kernel>::iterator i;
+      for (i = kernels.begin(); i != kernels.end(); i++) {
+        if ((*i).second != 0) clReleaseKernel((*i).second);
+      }
+    }
+    if (program != 0) clReleaseProgram(program);
+    if (queue != 0) clReleaseCommandQueue(queue);
+    if (context != 0) clReleaseContext(context);
+  }
 };
 
 int main(int argc, char* argv[]) {
   const int window_width  = 1000;
   const int window_height = 1000;
 
-  const int width  = 50;
-  const int height = 50;
-  const int num_agents = 50;
+  //const int width  = 50;
+  //const int height = 50;
+  //const int num_agents = 50;
+
+  const int width  = 1000;
+  const int height = 1000;
+  const int num_agents = 50000;
 
   Sugarscape sugarscape(
     window_width,
@@ -791,8 +1014,13 @@ int main(int argc, char* argv[]) {
     height,
     num_agents
     );
+
+  if (!sugarscape.init()) {
+    return 1;
+  }
+
   //sugarscape.setVsync(0);
-  //sugarscape.setStop(true);
+  sugarscape.setStop(true);
   sugarscape.start();
 
   std::cout << "Simulation finished\n";
