@@ -15,7 +15,7 @@ uint randomi(uint low, uint high, __global uint4* s) {
     t = (seed.x^(seed.x<<11));
     seed.x = seed.y;
     seed.y = seed.z;
-    seed.z = seed.w;
+    seed.z = seed.w; 
     seed.w = (seed.w^(seed.w>>19))^(t^(t>>8));
     s[gid] = seed;
     return low + ( seed.w % ( high - low ) );
@@ -75,12 +75,12 @@ __kernel
 void moveToEmptySpot(__global int *space,
 	__global uint4 *seed,
 	__global int2  *position,
-	__global int   *group,
 	const float friendRate)
 {
 	const int agent_id = get_global_id(0);
 	int2 myPos = position[agent_id];
-	int myGroupNum = group[agent_id];
+	//int myGroupNum = group[agent_id];
+  int myGroupNum = space[ getOneDimIdx(myPos) ];
 
 	int count = 0;
 	int friendCount = 0;
@@ -100,10 +100,12 @@ void moveToEmptySpot(__global int *space,
 	}
 	}
 
-	if (count == 0) return;
+  float myRate = 0;
 
-	float myRate = (float)friendCount / count;
-	if (myRate < friendRate) {
+  if (count != 0)
+	  myRate = (float)friendCount / count;
+	
+  if (myRate < friendRate) {
 		int moveCount = 0;
 		while (moveCount < 1000) {
 			int x = (int)randomi(0, WIDTH,  seed);
