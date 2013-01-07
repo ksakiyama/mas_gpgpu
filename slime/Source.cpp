@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <map>
 
 #if defined(_WIN32)||defined(_WIN64) /* Windows */
 #include <GL/glew.h>
@@ -29,6 +30,8 @@ class Slime {
   const int width;
   const int height;
   const int population;
+
+  const float sniff_threshold;
 
   GLuint agentVertexObj;
   GLuint agentColorObj;
@@ -59,7 +62,7 @@ class Slime {
   cl_command_queue queue;
   cl_program program;
 
-  std::vector<cl_kernel*> kernels;
+  std::map<std::string, cl_kernel> kernels;
   std::vector<cl_mem> buffers;
 
   cl_mem memPositions;
@@ -68,6 +71,7 @@ class Slime {
   cl_mem memChemicals_;
   cl_mem memVertexObj;
   cl_mem memColorObj;
+  cl_mem memSeed;
 
 public:
   Slime(int window_width_,
@@ -80,6 +84,7 @@ public:
     width(width_),
     height(height_),
     population(population_),
+    sniff_threshold(1.f),//
     agentVertexObj(0),
     agentColorObj(0),
     spaceVertexObj(0),
@@ -139,13 +144,136 @@ public:
     memVertexObj = createFromGLBuffer(agentVertexObj);
     memColorObj = createFromGLBuffer(spaceColorObj);
 
+    std::vector<unsigned int> seed(population * 4, 0);
+    for (int i = 0; i < population * 4; i++) {
+      seed[i] = mcl::Random::random();
+    }
+
+    memSeed = createCLBuffer(&seed[0], seed.size());
+
+    for (size_t i = 0; i < buffers.size(); i++) {
+      if (buffers[i] == 0) return 0;
+    }
+
+    int err = 1;
+    err &= createKernel("writeAgentVertexObj");
+    err &= createKernel("writeSpaceColorObj");
+    err &= createKernel("diffuse");
+    err &= createKernel("moveIdealChemicalSpot");
+    if (err == 0) return 0;
+
+    setKernelArgs();
+
     return 1;
   }
 
 private:
   int run() {
-    //TODO
+    int err;
+
+    err = moveToIdealChemicalSpot();
+    if (err == 0) return 0;
+
+    err = diffuse();
+    if (err == 0) return 0;
+
+    err = writeAgentVertexObj();
+    if (err == 0) return 0;
+
+    err = writeSpaceColorObj();
+    if (err == 0) return 0;
+
     return 1;
+  }
+
+  int writeAgentVertexObj() {
+    int err = 0;
+
+    err = acquireGLObject(memVertexObj);
+    if (err == 0) return 0;
+
+    size_t gwSize = population;
+    err = launchKernel("writeAgentVertexObj", &gwSize, 1);
+    if (err == 0) return 0;
+
+    err = releaseGLObject(memVertexObj);
+    if (err == 0) return 0;
+  
+    return 1;
+  }
+
+  int writeSpaceColorObj() {
+    int err = 0;
+    std::string krnl = "writeSpaceColorObj";
+    setArg(krnl, 1, memChemicals);
+
+    err = acquireGLObject(memColorObj);
+    if (err == 0) return 0;
+
+    size_t gwSize[2] = {width, height};
+    err = launchKernel(krnl, gwSize, 2);
+    if (err == 0) return 0;
+
+    err = releaseGLObject(memColorObj);
+    if (err == 0) return 0;
+
+    return 1;
+  }
+
+  int diffuse() {
+    std::string krnl = "diffuse";
+    setArg(krnl, 0, memChemicals_);
+    setArg(krnl, 1, memChemicals);
+
+    size_t gwSize[2] = {width, height};
+    int err = launchKernel(krnl, gwSize, 2);
+    if (err == 0) return 0;
+
+    cl_mem memTmp = memChemicals;
+    memChemicals = memChemicals_;
+    memChemicals_ = memTmp;
+
+    return 1;
+  }
+
+  int moveToIdealChemicalSpot() {
+    std::string krnl = "moveIdealChemicalSpot";
+    setArg(krnl, 2, memChemicals);
+
+    size_t gwSize = population;
+    return launchKernel(krnl, &gwSize, 1);
+  }
+
+  void setKernelArgs() {
+    std::string krnl;
+    krnl = "writeAgentVertexObj";
+    int i = 0;
+    setArg(krnl, i++, memVertexObj);
+    setArg(krnl, i++, memPositions);
+    setArg(krnl, i++, memAngles);
+    setArg(krnl, i++, patch);
+
+    krnl = "writeSpaceColorObj";
+    i = 0;
+    setArg(krnl, i++, memColorObj);
+    i++;
+    setArg(krnl, i++, mcl::Color::Lime);
+    setArg(krnl, i++, (float)0);
+    setArg(krnl, i++, (float)3);
+
+    krnl = "diffuse";
+    i = 0;
+    i++;
+    i++;
+    setArg(krnl, i++, (float)0.9f);
+
+    krnl = "moveIdealChemicalSpot";
+    i = 0;
+    setArg(krnl, i++, memPositions);
+    setArg(krnl, i++, memAngles);
+    i++;
+    setArg(krnl, i++, memSeed);
+    setArg(krnl, i++, sniff_threshold);
   }
 
   void createAgentGLObjects(float *pos, int *angl) {
@@ -358,23 +486,13 @@ private:
       return 0;
     }
 
-    // TODO
-    /*moveToIdealTempSpot = clCreateKernel(program, "moveToIdealTempSpot", &ret);
-    if (ret != CL_SUCCESS) return 0;
-    diffuseSpaceTemp = clCreateKernel(program, "diffuseSpaceTemp", &ret);
-    if (ret != CL_SUCCESS) return 0;
-    writeAgentVertexObj = clCreateKernel(program, "writeAgentVertexObj", &ret);
-    if (ret != CL_SUCCESS) return 0;
-    writeSpaceColorObj = clCreateKernel(program, "writeSpaceColorObj", &ret);
-    if (ret != CL_SUCCESS) return 0;*/
-
     return 1;
   }
 
   template <class T>
-  int setArg(cl_kernel *krnl, cl_uint num, T value) {
+  int setArg(std::string kernelName, cl_uint num, T value) {
     cl_int ret = clSetKernelArg(
-      *krnl,
+      kernels[kernelName],
       num,
       details::SetArgHandler<T>::size(value),//sizeof(T),
       details::SetArgHandler<T>::ptr(value));
@@ -397,10 +515,10 @@ private:
     return 1;
   }
 
-  int launchKernel(cl_kernel *krnl, size_t *gwSize, cl_uint dim) {
+  int launchKernel(std::string kernelName, size_t *gwSize, cl_uint dim) {
     cl_event event_;
     cl_int ret = clEnqueueNDRangeKernel(queue,
-      *krnl,
+      kernels[kernelName],
       dim,
       NULL,
       gwSize,
@@ -477,6 +595,17 @@ private:
     return memObj;
   }
 
+  int createKernel(std::string krnlName) {
+    cl_int ret;
+    kernels.insert( std::map<std::string, cl_kernel>::value_type( krnlName, (cl_kernel)0) );
+    kernels[krnlName] = clCreateKernel(program, krnlName.c_str(), &ret);
+    if (ret != CL_SUCCESS) {
+      std::cerr << "Error " << ret << ": clCreateKernel\n";
+      return 0;
+    }
+    return 1;
+  }
+
   void rotation(float *x, float *y, int angle) {
     float _x = *x, _y = *y;
     double rag = (double)angle * 3.141592 / 180.0;
@@ -550,6 +679,8 @@ private:
     glColorPointer(3, GL_FLOAT, 0, 0);
 
     glDrawArrays(GL_QUADS, 0, width * height * 4);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     glBindBuffer(GL_ARRAY_BUFFER, agentVertexObj);
     glVertexPointer(3, GL_FLOAT, 0, 0);
@@ -719,8 +850,9 @@ private:
       }
     }
     if (!kernels.empty()) {
-      for (size_t i = 0; i < kernels.size(); i++) {
-        if (*kernels[i] != 0) clReleaseKernel(*kernels[i]);
+      std::map<std::string, cl_kernel>::iterator i;
+      for (i = kernels.begin(); i != kernels.end(); i++) {
+        if ((*i).second != 0) clReleaseKernel((*i).second);
       }
     }
     if (program != 0) clReleaseProgram(program);
@@ -733,9 +865,9 @@ int main() {
   const int window_width  = 1000;
   const int window_height = 1000;
 
-  const int width  = 1000 / 4;
-  const int height = 1000 / 4;
-  const int num_agents = 200;
+  const int width  = 1000;
+  const int height = 1000;
+  const int num_agents = 150000;
 
   Slime slime(window_width,
     window_height,
@@ -743,6 +875,8 @@ int main() {
     height,
     num_agents);
   
+  slime.setPlatformIndex(0);
+
   if (!slime.init()) return 0;
 
   slime.start();
