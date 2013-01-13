@@ -123,25 +123,40 @@ public:
 
     memSeed = createCLBuffer(&seed.front(), seed.size());
 
-    std::vector<int> status(width * height, 5);
+    std::vector<int> status(width * height, 0);
     memStatus = createCLBuffer(&status.front(), status.size());
     memNeighborStatus = createCLBuffer(&status.front(), status.size());
 
-    std::vector<float> colordata(14, 0);
-    colordata[0]  = mcl::Color::Green;
-    colordata[1]  = -1;
-    colordata[2]  = mcl::Color::Green;
-    colordata[3]  = -0.5f;
-    colordata[4]  = mcl::Color::Green;
-    colordata[5]  = -0.25f;
-    colordata[6]  = mcl::Color::Green;
-    colordata[7]  = 0;
-    colordata[8]  = mcl::Color::Red;
-    colordata[9]  = 0;
-    colordata[10] = mcl::Color::Orange;
-    colordata[11] = 0;
-    colordata[12] = mcl::Color::Orange;
-    colordata[13] = -0.2f;
+    std::vector<float> colordata(3 * 7, 0);
+    float rgb[3];
+    mcl::Color::trans(rgb, mcl::Color::Green, -1);
+    colordata[0] = rgb[0];
+    colordata[1] = rgb[1];
+    colordata[2] = rgb[2];
+    mcl::Color::trans(rgb, mcl::Color::Green, -0.5f);
+    colordata[3] = rgb[0];
+    colordata[4] = rgb[1];
+    colordata[5] = rgb[2];
+    mcl::Color::trans(rgb, mcl::Color::Green, -0.25f);
+    colordata[6] = rgb[0];
+    colordata[7] = rgb[1];
+    colordata[8] = rgb[2];
+    mcl::Color::trans(rgb, mcl::Color::Green, 0);
+    colordata[9] = rgb[0];
+    colordata[10] = rgb[1];
+    colordata[11] = rgb[2];
+    mcl::Color::trans(rgb, mcl::Color::Red, 0);
+    colordata[12] = rgb[0];
+    colordata[13] = rgb[1];
+    colordata[14] = rgb[2];
+    mcl::Color::trans(rgb, mcl::Color::Orange, 0);
+    colordata[15] = rgb[0];
+    colordata[16] = rgb[1];
+    colordata[17] = rgb[2];
+    mcl::Color::trans(rgb, mcl::Color::Orange, -0.2f);
+    colordata[18] = rgb[0];
+    colordata[19] = rgb[1];
+    colordata[20] = rgb[2];
 
     memColor = createCLBuffer(&colordata.front(), colordata.size());
 
@@ -293,8 +308,9 @@ private:
 
     for (int i = 0; i < width * height; i++) {
       float rgb[3];
-      float bias = 1;
-      mcl::Color::trans(rgb, cellColor[ 2 * cellStatus[i] ], cellColor[ 2 * cellStatus[i] + 1 ]);
+      rgb[0] = cellColor[ 3 * cellStatus[i] + 0 ];
+      rgb[1] = cellColor[ 3 * cellStatus[i] + 1 ];
+      rgb[2] = cellColor[ 3 * cellStatus[i] + 2 ];
       bufferObj[12 * i + 0 ] = rgb[0]; // r
       bufferObj[12 * i + 1 ] = rgb[1]; // g
       bufferObj[12 * i + 2 ] = rgb[2]; // b

@@ -1,4 +1,4 @@
-#include "../SakiyaMas.h"
+#include "../common/SakiyaMas.h"
 
 #include <iostream>
 #include <vector>
@@ -282,7 +282,7 @@ private:
 
   int move(cl_mem temp) {
     size_t gwSize = population;
-    
+
     int err = 0;
     err = setArg(&moveToIdealTempSpot, 5, temp);
     if (err == 0) return 0;
