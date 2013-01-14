@@ -64,7 +64,7 @@ class Forestfire {
   cl_mem memSeed;
   cl_mem memSpace;
   cl_mem memStatus;
-  cl_mem memNeighborStatus;
+  cl_mem memNewStatus;
   cl_mem memColor;
 
   std::map<std::string, cl_kernel> kernels;
@@ -125,7 +125,7 @@ public:
 
     std::vector<int> status(width * height, 0);
     memStatus = createCLBuffer(&status.front(), status.size());
-    memNeighborStatus = createCLBuffer(&status.front(), status.size());
+    memNewStatus = createCLBuffer(&status.front(), status.size());
 
     std::vector<float> colordata(3 * 7, 0);
     float rgb[3];
