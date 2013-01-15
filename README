@@ -1,3 +1,11 @@
-Multi Agent Simulation Examples using GPU
+Multi Agent Simulation Examples using GPU.
 
-You need OpenCL SDK to run these programs.
+You need following libraries to run samples.
+
+OpenCL
+freeglut
+GLEW
+
+Windows: Visual Studio
+Linux: g++
+
