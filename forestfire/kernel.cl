@@ -36,7 +36,7 @@ void transHSVtoRGB(float *dst, const float h, const float s, const float v) {
 }
 
 uint randomi(uint low, uint high, __global uint4* s) {
-    const uint gid = get_global_id(0);
+    const uint gid = get_global_id(0) + WIDTH * get_global_id(1);
     uint t;
     uint4 seed = s[gid];
     t = (seed.x^(seed.x<<11));
@@ -46,6 +46,10 @@ uint randomi(uint low, uint high, __global uint4* s) {
     seed.w = (seed.w^(seed.w>>19))^(t^(t>>8));
     s[gid] = seed;
     return low + ( seed.w % ( high - low ) );
+}
+
+float randomf(__global uint4* seed) {
+    return ( randomi( 0, 10000000, seed ) / 10000000.0f );
 }
 
 int2 getTorus(int2 pos) {
@@ -58,7 +62,7 @@ int getOneDimIdx(int2 pos) {
 }
 
 __kernel
-void writeSpaceColorObj(
+void writeColorObj(
         __global float4 *colorObj,
         __global int *status,
         __global float *colorValue)
@@ -89,17 +93,17 @@ void updateCellStatus(
     int myStatus = status[offset];
 
     if (myStatus == 0) {
-        if ( randomf(1, seed) < 0.1f) {
+        if ( randomf(seed) < 0.1f ) {
             myStatus = 1;
         }
     }
     else if (myStatus == 1) {
-        if ( randomf(1, seed) < 0.02f ) {
+        if ( randomf(seed) < 0.02f ) {
             myStatus = 2;
         }
     }
     else if (myStatus == 2) {
-        if ( randomf(1, seed) < 0.02f ) {
+        if ( randomf(seed) < 0.02f ) {
             myStatus = 3;
         }
     }
@@ -108,24 +112,24 @@ void updateCellStatus(
         int bottom = status[ getOneDimIdx( pos + (int2)( 1,  0) ) ];
         int left   = status[ getOneDimIdx( pos + (int2)( 0, -1) ) ];
         int right  = status[ getOneDimIdx( pos + (int2)( 0,  1) ) ];
-        if ( randomf(1, seed) < 0.0001f 
+        if ( randomf(seed) < 0.0001f 
                 || ((top == 4 || bottom == 4 || left == 4 || right == 4)
-                    && randomf(1, seed) < 0.8f )) {
+                    && randomf(seed) < 0.8f )) {
             myStatus = 4;
         } 
     }
     else if (myStatus == 4) {
-        if ( randomf(1, seed) < 1.f ) {
+        if ( randomf(seed) < 1.f ) {
             myStatus = 5;
         }
     }
     else if (myStatus == 5) {
-        if ( randomf(1, seed) < 0.8f ) {
+        if ( randomf(seed) < 0.8f ) {
             myStatus = 6;
         }
     }
     else if (myStatus == 6) {
-        if ( randomf(1, seed) < 0.8f ) {
+        if ( randomf(seed) < 0.8f ) {
             myStatus = 0;
         }
     }

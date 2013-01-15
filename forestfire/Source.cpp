@@ -1,4 +1,4 @@
-#include "../common/SakiyaMas.h"
+#include "SakiyaMas.h"
 
 #include <iostream>
 #include <vector>
@@ -30,8 +30,8 @@ class Forestfire {
   const int width;
   const int height;
 
-  GLuint spaceVertexObj;
-  GLuint spaceColorObj;
+  GLuint vertexObj;
+  GLuint colorObj;
 
   float patch;
   float halfPatch;
@@ -65,7 +65,8 @@ class Forestfire {
   cl_mem memSpace;
   cl_mem memStatus;
   cl_mem memNewStatus;
-  cl_mem memColor;
+  cl_mem memColorValue;
+  cl_mem memColorObj;
 
   std::map<std::string, cl_kernel> kernels;
   std::vector<cl_mem> buffers;
@@ -79,8 +80,8 @@ public:
     window_height(window_height_),
     width(width_),
     height(height_),
-    spaceVertexObj(0),
-    spaceColorObj(0),
+    vertexObj(0),
+    colorObj(0),
     mouse_button(0),
     translate_x(0),
     translate_y(0),
@@ -118,7 +119,9 @@ public:
 
     std::vector<unsigned int> seed(width * height * 4, 0);
     for (int i = 0; i < width * height * 4; i++) {
-      seed[i] = mcl::Random::random();
+      //seed[i] = mcl::Random::random();
+      //if (i < 500) std::cout << seed[i] << std::endl;
+      seed[i] = rand();
     }
 
     memSeed = createCLBuffer(&seed.front(), seed.size());
@@ -158,7 +161,7 @@ public:
     colordata[19] = rgb[1];
     colordata[20] = rgb[2];
 
-    memColor = createCLBuffer(&colordata.front(), colordata.size());
+    memColorValue = createCLBuffer(&colordata.front(), colordata.size());
 
     /* Checking Memory Objs */
     for (size_t i = 0; i < buffers.size(); i++) {
@@ -167,12 +170,73 @@ public:
 
     createBufferObjs(&status.front(), &colordata.front());
 
+    memColorObj = createFromGLBuffer(colorObj);
+
+    int err = 1;
+    err &= createKernel("writeColorObj");
+    err &= createKernel("updateCellStatus");
+    err &= createKernel("changeStatus");
+    if (err == 0) return 0;
+
     return 1;
   }
 
 private:
   int run() {
+    int ret;
+    ret = updateCellStatus();
+    if (ret == 0) return 0;
+
+    ret = changeStatus();
+    if (ret == 0) return 0;
+
+    ret = writeColorObj();
+    if (ret == 0) return 0;
+
+    cl_mem tmpMemObj = memStatus;
+    memStatus = memNewStatus;
+    memNewStatus = tmpMemObj;
+
     return 1;
+  }
+
+  int writeColorObj() {
+    int err;
+    err = acquireGLObject(memColorObj);
+    if (err == 0) return 0;
+
+    std::string kernel = "writeColorObj";
+    setArg(kernel, 0, memColorObj);
+    setArg(kernel, 1, memStatus);
+    setArg(kernel, 2, memColorValue);
+
+    size_t gwSize[2] = {width, height};
+    err = launchKernel(kernel, gwSize, 2);
+    if (err == 0) return 0;
+
+    err = releaseGLObject(memColorObj);
+    if (err == 0) return 0;
+
+    return 1;
+  }
+
+  int updateCellStatus() {
+    std::string kernel = "updateCellStatus";
+    setArg(kernel, 0, memSeed);
+    setArg(kernel, 1, memStatus);
+    setArg(kernel, 2, memNewStatus);
+
+    size_t gwSize[2] = {width, height};
+    return launchKernel(kernel, gwSize, 2);
+  }
+
+  int changeStatus() {
+    std::string kernel = "changeStatus";
+    setArg(kernel, 0, memStatus);
+    setArg(kernel, 1, memNewStatus);
+
+    size_t gwSize[2] = {width, height};
+    return launchKernel(kernel, gwSize, 2);
   }
 
   int initGlut() {
@@ -301,8 +365,8 @@ private:
       bufferObj[12 * i + 11] = 0;
     }
 
-    glGenBuffers(1, &spaceVertexObj);
-    glBindBuffer(GL_ARRAY_BUFFER, spaceVertexObj);
+    glGenBuffers(1, &vertexObj);
+    glBindBuffer(GL_ARRAY_BUFFER, vertexObj);
     glBufferData(GL_ARRAY_BUFFER, size, &bufferObj[0], GL_STATIC_DRAW);
     glFinish();
 
@@ -325,8 +389,8 @@ private:
       bufferObj[12 * i + 11] = rgb[2];
     }
 
-    glGenBuffers(1, &spaceColorObj);
-    glBindBuffer(GL_ARRAY_BUFFER, spaceColorObj);
+    glGenBuffers(1, &colorObj);
+    glBindBuffer(GL_ARRAY_BUFFER, colorObj);
     glBufferData(GL_ARRAY_BUFFER, size, &bufferObj[0], GL_STATIC_DRAW);
     glFinish();
   }
@@ -511,10 +575,10 @@ private:
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
 
-    glBindBuffer(GL_ARRAY_BUFFER, spaceVertexObj);
+    glBindBuffer(GL_ARRAY_BUFFER, vertexObj);
     glVertexPointer(3, GL_FLOAT, 0, 0);
 
-    glBindBuffer(GL_ARRAY_BUFFER, spaceColorObj);
+    glBindBuffer(GL_ARRAY_BUFFER, colorObj);
     glColorPointer(3, GL_FLOAT, 0, 0);
 
     glDrawArrays(GL_QUADS, 0, width * height * 4);
@@ -656,13 +720,13 @@ private:
   }
 
   void cleanup() {
-    if (spaceVertexObj != 0) {
-      glBindBuffer(1, spaceVertexObj);
-      glDeleteBuffers(1, &spaceVertexObj);
+    if (vertexObj != 0) {
+      glBindBuffer(1, vertexObj);
+      glDeleteBuffers(1, &vertexObj);
     }
-    if (spaceColorObj != 0) {
-      glBindBuffer(1, spaceColorObj);
-      glDeleteBuffers(1, &spaceColorObj);
+    if (colorObj != 0) {
+      glBindBuffer(1, colorObj);
+      glDeleteBuffers(1, &colorObj);
     }
     if (!buffers.empty()) {
       for (size_t i = 0; i < buffers.size(); i++) {
@@ -685,11 +749,11 @@ int main(int argc, char* argv[]) {
   const int window_width  = 1000;
   const int window_height = 1000;
 
-  const int width  = 50;
-  const int height = 50;
+  //const int width  = 200;
+  //const int height = 200;
 
-  //const int width  = 1000;
-  //const int height = 1000;
+  const int width  = 1000;
+  const int height = 1000;
 
   Forestfire forestfore(
     window_width,
